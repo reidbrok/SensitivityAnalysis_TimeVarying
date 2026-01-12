@@ -15,9 +15,9 @@ library(parallel)
 library(foreach)
 library(doParallel)
 
-registerDoParallel(10)
+registerDoParallel(40)
 
-samplesize = 500
+
 expit <- function(x){
   x <- exp(x)/(exp(x)+1)
   return(x)
@@ -49,13 +49,6 @@ mysim.bin.cens <- function(outfile, from=1, to=100, U=1, #parameters defining th
                            coef_u = -.3, coef_a = .1
 ) {
 
-
-  #
-  #
-  # from=1; to=4;
-  # samplesize=500;
-  # B=450;  pdraw = 8000; nburnin = 5000; i= 1; nboot = 500
-
   expit <- function(x){
     x <- exp(x)/(exp(x)+1)
     return(x)
@@ -68,17 +61,16 @@ mysim.bin.cens <- function(outfile, from=1, to=100, U=1, #parameters defining th
     library(WeightIt) #package to assess covariates balance by treatment;
     library(marginaleffects)
     library(data.table)
-    # data generation seed;
-
+    library(MCMCpack)
+    library(bayesmsm)
     set.seed(i+123)
 
     results.it <- matrix(NA, 1, 17) #to change number of parameters;
     colnames(results.it)<- c("true value","MSM withU -est","MSM withU -sd","MSM noU -est","MSM noU -sd",
-                             "G_compute sf -est","G_compute sf -sd","G_compute sf error -est",
-                             "G_compute sf error -sd","G_compute sf error -naive sd",
-                             "G_compute sf error h2 -est",
-                             "G_compute sf error h2 -sd","G_compute sf h2 error -naive sd",
-                             "BSA -est","BSA -sd","BSA -CIL","BSA -CLU")
+                             "G_compute sf -est","G_compute sf -sd",
+                             "BMSM sf -est", "BMSM sf  -sd",
+                             "G_compute sf error with h =2 est","G_compute sf error with h =2 sd", "G_compute sf errorwith h =2 CILower","G_compute sf h2 error h=2 CIUpper",
+                             "BSA with h =2 est","BSA with h =2 -sd","BSA with h =2 -CIL","BSA with h =2 -CLU")
 
     X1_1 <- rbinom(samplesize,1, prob = 0.5)
     X2_1 <- rbinom(samplesize,1, prob = 0.5)
@@ -117,8 +109,6 @@ mysim.bin.cens <- function(outfile, from=1, to=100, U=1, #parameters defining th
                            A1,A2,A3,
                            Y111,Y110,Y101,Y100,Y011,Y010,Y001,Y000,Y,id=c(1:samplesize))
 
-    # xtabs(~A1+A2+A3, data = full_dat)
-    # write.csv(full_dat, "full_dat.csv")
 
     # data approximate where the true value is provided at the top at -10.27;
     # results.it[1,1] <- mean(full_dat$Y111) - mean(full_dat$Y000)
@@ -149,15 +139,9 @@ mysim.bin.cens <- function(outfile, from=1, to=100, U=1, #parameters defining th
     full_dat$weights_withU <- WMSM_withU$weights
 
     MSM_withU <- lm(Y ~ (A1 + A2 + A3), weights = weights_withU, data = full_dat)
-
-    p<-avg_predictions(MSM_withU,
-                       vcov = "HC3",
-                       newdata = datagrid(A1 = 0:1, A2 = 0:1, A3 = 0:1),
-                       by = c("A1", "A2", "A3"),
-                       wts = "weights_withU",
-                       type = "response")
-    results.it[1,2]<- hypotheses(p, "b8 - b1 = 0")$estimate
-    results.it[1,3]<- hypotheses(p, "b8 - b1 = 0")$std.error
+    
+    results.it[1,2]<- coef(MSM_withU)["A1"] + coef(MSM_withU)["A2"] + coef(MSM_withU)["A3"]
+    
     #remove all the X1_
     WMSM_noU <- weightitMSM(
       list(A1 ~ X2_1,
@@ -169,15 +153,8 @@ mysim.bin.cens <- function(outfile, from=1, to=100, U=1, #parameters defining th
 
     full_dat$weights_withoutU <- WMSM_noU$weights
     MSM_noU <- lm(Y ~ A1 + A2 + A3, weights = weights_withoutU, data = full_dat)
-    p<-avg_predictions(MSM_noU,
-                       vcov = "HC3",
-                       newdata = datagrid(A1 = 0:1, A2 = 0:1, A3 = 0:1),
-                       by = c("A1", "A2", "A3"),
-                       wts = "weights_withoutU",
-                       type = "response")
 
-    results.it[1,4]<- hypotheses(p, "b8 - b1 = 0")$estimate
-    results.it[1,5]<- hypotheses(p, "b8 - b1 = 0")$std.error
+    results.it[1,4]<- coef(MSM_noU)["A1"] + coef(MSM_noU)["A2"] + coef(MSM_noU)["A3"]
 
     #
     # 4. Marginal Sturtural Model with sensitivity function
@@ -244,50 +221,154 @@ mysim.bin.cens <- function(outfile, from=1, to=100, U=1, #parameters defining th
     }
     # SF_calculation1(A1=1, A2=1, A3=1)
 
-
-    full_dat = full_dat  %>% mutate(bias_1 = case_when(
-      A1 == 1& A2 == 1& A3 == 1 ~ SF_calculation1(A1=1, A2=1, A3=1)*(1-ptrt_1) ,
-      A1 == 1& A2 == 1& A3 == 0 ~ SF_calculation1(A1=1, A2=1, A3=0)*ptrt_1,
-      A1 == 1& A2 == 0& A3 == 0 ~ SF_calculation1(A1=1, A2=0, A3=0)*ptrt_1 ,
-      A1 == 1& A2 == 0& A3 == 1 ~ SF_calculation1(A1=1, A2=0, A3=1)*(1-ptrt_1),
-      A1 == 0& A2 == 1& A3 == 1 ~ SF_calculation1(A1=0, A2=1, A3=1)*(1-ptrt_1),
-      A1 == 0& A2 == 1& A3 == 0 ~ SF_calculation1(A1=0, A2=1, A3=0)*ptrt_1 ,
-      A1 == 0& A2 == 0& A3 == 1 ~ SF_calculation1(A1=0, A2=0, A3=1)*(1-ptrt_1) ,
-      A1 == 0& A2 == 0& A3 == 0 ~ SF_calculation1(A1=0, A2=0, A3=0)*ptrt_1,
-      TRUE ~ NA_real_)) %>% mutate(bias_2 = case_when(
-        A1 == 1& A2 == 1& A3 == 1 ~ SF_calculation2(A1=1, A2=1, A3=1)*(1-ptrt_2) ,
-        A1 == 1& A2 == 1& A3 == 0 ~ SF_calculation2(A1=1, A2=1, A3=0)*(1-pcon_2),
-        A1 == 1& A2 == 0& A3 == 0 ~ SF_calculation2(A1=1, A2=0, A3=0)*pcon_2,
-        A1 == 1& A2 == 0& A3 == 1 ~ SF_calculation2(A1=1, A2=0, A3=1)*ptrt_2,
-        A1 == 0& A2 == 1& A3 == 1 ~ SF_calculation2(A1=0, A2=1, A3=1)*(1-ptrt_2),
-        A1 == 0& A2 == 1& A3 == 0 ~ SF_calculation2(A1=0, A2=1, A3=0)*(1-pcon_2),
-        A1 == 0& A2 == 0& A3 == 1 ~ SF_calculation2(A1=0, A2=0, A3=1)*ptrt_2,
-        A1 == 0& A2 == 0& A3 == 0 ~ SF_calculation2(A1=0, A2=0, A3=0)*pcon_2,
-        TRUE ~ NA_real_)) %>% mutate(bias_3 = case_when(
-          A1 == 1& A2 == 1& A3 == 1 ~ SF_calculation3(A1=1, A2=1, A3=1)*(1-ptrt_3) ,
-          A1 == 1& A2 == 1& A3 == 0 ~ SF_calculation3(A1=1, A2=1, A3=0)*(1 - pcon_3_a2),
-          A1 == 1& A2 == 0& A3 == 0 ~ SF_calculation3(A1=1, A2=0, A3=0)*(1- pcon_3),
-          A1 == 1& A2 == 0& A3 == 1 ~ SF_calculation3(A1=1, A2=0, A3=1)*(1 - pcon_3_a1),
-          A1 == 0& A2 == 1& A3 == 1 ~ SF_calculation3(A1=0, A2=1, A3=1)*ptrt_3,
-          A1 == 0& A2 == 1& A3 == 0 ~ SF_calculation3(A1=0, A2=1, A3=0)*pcon_3_a2,
-          A1 == 0& A2 == 0& A3 == 1 ~ SF_calculation3(A1=0, A2=0, A3=1)*pcon_3_a1,
-          A1 == 0& A2 == 0& A3 == 0 ~ SF_calculation3(A1=0, A2=0, A3=0)*pcon_3,
-          TRUE ~ NA_real_))
-
+    
+    full_dat <- full_dat %>% 
+      mutate(
+        mu_1 = case_when(
+          A3 == 1 & A2 == 1 & A1 == 1 ~ SF_calculation1(A3 = 1, A2 = 1, A1 = 1),
+          A3 == 1 & A2 == 1 & A1 == 0 ~ SF_calculation1(A3 = 1, A2 = 1, A1 = 0),
+          A3 == 1 & A2 == 0 & A1 == 0 ~ SF_calculation1(A3 = 1, A2 = 0, A1 = 0),
+          A3 == 1 & A2 == 0 & A1 == 1 ~ SF_calculation1(A3 = 1, A2 = 0, A1 = 1),
+          A3 == 0 & A2 == 1 & A1 == 1 ~ SF_calculation1(A3 = 0, A2 = 1, A1 = 1),
+          A3 == 0 & A2 == 1 & A1 == 0 ~ SF_calculation1(A3 = 0, A2 = 1, A1 = 0),
+          A3 == 0 & A2 == 0 & A1 == 1 ~ SF_calculation1(A3 = 0, A2 = 0, A1 = 1),
+          A3 == 0 & A2 == 0 & A1 == 0 ~ SF_calculation1(A3 = 0, A2 = 0, A1 = 0),
+          TRUE ~ NA_real_
+        ),
+        mu_2 = case_when(
+          A3 == 1 & A2 == 1 & A1 == 1 ~ SF_calculation2(A3 = 1, A2 = 1, A1 = 1),
+          A3 == 1 & A2 == 1 & A1 == 0 ~ SF_calculation2(A3 = 1, A2 = 1, A1 = 0),
+          A3 == 1 & A2 == 0 & A1 == 0 ~ SF_calculation2(A3 = 1, A2 = 0, A1 = 0),
+          A3 == 1 & A2 == 0 & A1 == 1 ~ SF_calculation2(A3 = 1, A2 = 0, A1 = 1),
+          A3 == 0 & A2 == 1 & A1 == 1 ~ SF_calculation2(A3 = 0, A2 = 1, A1 = 1),
+          A3 == 0 & A2 == 1 & A1 == 0 ~ SF_calculation2(A3 = 0, A2 = 1, A1 = 0),
+          A3 == 0 & A2 == 0 & A1 == 1 ~ SF_calculation2(A3 = 0, A2 = 0, A1 = 1),
+          A3 == 0 & A2 == 0 & A1 == 0 ~ SF_calculation2(A3 = 0, A2 = 0, A1 = 0),
+          TRUE ~ NA_real_
+        ),
+        mu_3 = case_when(
+          A3 == 1 & A2 == 1 & A1 == 1 ~ SF_calculation3(A3 = 1, A2 = 1, A1 = 1),
+          A3 == 1 & A2 == 1 & A1 == 0 ~ SF_calculation3(A3 = 1, A2 = 1, A1 = 0),
+          A3 == 1 & A2 == 0 & A1 == 0 ~ SF_calculation3(A3 = 1, A2 = 0, A1 = 0),
+          A3 == 1 & A2 == 0 & A1 == 1 ~ SF_calculation3(A3 = 1, A2 = 0, A1 = 1),
+          A3 == 0 & A2 == 1 & A1 == 1 ~ SF_calculation3(A3 = 0, A2 = 1, A1 = 1),
+          A3 == 0 & A2 == 1 & A1 == 0 ~ SF_calculation3(A3 = 0, A2 = 1, A1 = 0),
+          A3 == 0 & A2 == 0 & A1 == 1 ~ SF_calculation3(A3 = 0, A2 = 0, A1 = 1),
+          A3 == 0 & A2 == 0 & A1 == 0 ~ SF_calculation3(A3 = 0, A2 = 0, A1 = 0),
+          TRUE ~ NA_real_
+        )
+      ) %>%
+      ## 2) weights part
+      mutate(
+        w_1 = case_when(
+          A3 == 1 & A2 == 1 & A1 == 1 ~ (1 - ptrt_1),
+          A3 == 1 & A2 == 1 & A1 == 0 ~ ptrt_1,
+          A3 == 1 & A2 == 0 & A1 == 0 ~ ptrt_1,
+          A3 == 1 & A2 == 0 & A1 == 1 ~ (1 - ptrt_1),
+          A3 == 0 & A2 == 1 & A1 == 1 ~ (1 - ptrt_1),
+          A3 == 0 & A2 == 1 & A1 == 0 ~ ptrt_1,
+          A3 == 0 & A2 == 0 & A1 == 1 ~ (1 - ptrt_1),
+          A3 == 0 & A2 == 0 & A1 == 0 ~ ptrt_1,
+          TRUE ~ NA_real_
+        ),
+        w_2 = case_when(
+          A3 == 1 & A2 == 1 & A1 == 1 ~ (1 - ptrt_2),
+          A3 == 1 & A2 == 1 & A1 == 0 ~ (1 - pcon_2),
+          A3 == 1 & A2 == 0 & A1 == 0 ~ pcon_2,
+          A3 == 1 & A2 == 0 & A1 == 1 ~ ptrt_2,
+          A3 == 0 & A2 == 1 & A1 == 1 ~ (1 - ptrt_2),
+          A3 == 0 & A2 == 1 & A1 == 0 ~ (1 - pcon_2),
+          A3 == 0 & A2 == 0 & A1 == 1 ~ ptrt_2,
+          A3 == 0 & A2 == 0 & A1 == 0 ~ pcon_2,
+          TRUE ~ NA_real_
+        ),
+        w_3 = case_when(
+          A3 == 1 & A2 == 1 & A1 == 1 ~ (1 - ptrt_3),
+          A3 == 1 & A2 == 1 & A1 == 0 ~ (1 - pcon_3_a2),
+          A3 == 1 & A2 == 0 & A1 == 0 ~ (1 - pcon_3),
+          A3 == 1 & A2 == 0 & A1 == 1 ~ (1 - pcon_3_a1),
+          A3 == 0 & A2 == 1 & A1 == 1 ~ ptrt_3,
+          A3 == 0 & A2 == 1 & A1 == 0 ~ pcon_3_a2,
+          A3 == 0 & A2 == 0 & A1 == 1 ~ pcon_3_a1,
+          A3 == 0 & A2 == 0 & A1 == 0 ~ pcon_3,
+          TRUE ~ NA_real_
+        )
+      ) %>% mutate(
+      bias_1 = mu_1 * w_1,
+      bias_2 = mu_2 * w_2,
+      bias_3 = mu_3 * w_3
+    )
     full_dat = full_dat %>% mutate(Y_sf = Y - bias_1 - bias_2 - bias_3)
+    
+    ##### G compute sf
 
     MSM_noU_sf <- lm(Y_sf ~ A1 + A2 + A3, weights = weights_withoutU, data = full_dat)
-    p<-avg_predictions(MSM_noU_sf,
-                       vcov = "HC3",
-                       newdata = datagrid(A1 = 0:1, A2 = 0:1, A3 = 0:1),
-                       by = c("A1", "A2", "A3"),
-                       wts = "weights_withoutU",
-                       type = "response")
-
-    results.it[1,6]<- hypotheses(p, "b8 - b1 = 0")$estimate
-    results.it[1,7]<- hypotheses(p, "b8 - b1 = 0")$std.error
-
-
+    
+    results.it[1,6]<- coef(MSM_noU_sf)["A1"] + coef(MSM_noU_sf)["A2"] + coef(MSM_noU_sf)["A3"]
+    
+    
+    sigma_val <- summary(lm(Y ~ A1 + A2 + A3, weights = weights_withoutU, data = full_dat))$sigma
+    
+    ATE_boot <- numeric(B)
+    Ysf_draws <- matrix(NA_real_, nrow = samplesize, ncol = B,dimnames = list(NULL, paste0("b", seq_len(B))))
+    ### SF method with uniform around 1
+    for (b1 in seq_len(B)) {
+      bias_1 <- runif(samplesize, full_dat$mu_1 - 2*sigma_val, full_dat$mu_1 + 2*sigma_val) * full_dat$w_1
+      bias_2 <- runif(samplesize, full_dat$mu_2 - 2*sigma_val, full_dat$mu_2 + 2*sigma_val) * full_dat$w_2
+      bias_3 <- runif(samplesize, full_dat$mu_3 - 2*sigma_val, full_dat$mu_3 + 2*sigma_val) * full_dat$w_3
+      
+      Ysf_draws[, b1] <- full_dat$Y - bias_1 - bias_2 - bias_3
+    }
+    
+    for (b2 in seq_len(B)){
+      Ysfb <- Ysf_draws[, b2]
+      fit  <- lm(Ysfb ~ A1 + A2 + A3, weights = weights_withoutU, data = full_dat)
+      
+      ATE_boot[b2]<- coef(fit)["A1"] + coef(fit)["A2"] + coef(fit)["A3"]
+    }
+    results.it[1,10]<- mean(ATE_boot)
+    results.it[1,11]<- sd(ATE_boot)
+    results.it[1,c(12,13)]<- quantile(ATE_boot, c(0.025, 0.975), na.rm = TRUE)
+    
+    #### BMSM - double Bayesian nonparametric bootstrap;
+    Bootest.BMSM <- rep(NA, nboot)
+    Bootest.BMSM_uni <- rep(NA, nboot)
+    for(i in 1:nboot){
+      
+      boot.w<-rdirichlet(1,rep(1,length(full_dat$Y_sf))) #weights on patients;
+      
+      # time-varying treatment model
+      WMSM_noU <- weightitMSM(
+        list(A1 ~ X2_1,
+             A2 ~ A1+X2_1+X2_2,
+             A3 ~ A2+A1+X2_1+X2_2+X2_3),
+        s.weights = boot.w,
+        method = "glm",
+        data = full_dat,
+        stabilize = T)
+      
+      wr = t((boot.w*WMSM_noU$weights)/sum(boot.w*WMSM_noU$weights))
+      full_dat$wr = wr[,1]
+      
+      BMSM_noU <- lm(Y_sf ~ (A1 + A2 + A3), 
+                     weights = wr, 
+                     data = full_dat)
+      
+      BMSM_noU_uni <- Ysf_draws[, i]
+      fit_bayes  <- lm(BMSM_noU_uni ~ A1 + A2 + A3, weights = wr, data = full_dat)
+      
+      Bootest.BMSM_uni[i]<- coef(fit_bayes)["A1"] + coef(fit_bayes)["A2"] + coef(fit_bayes)["A3"]
+      
+      Bootest.BMSM[i]<- coef(BMSM_noU)["A1"] + coef(BMSM_noU)["A2"] + coef(BMSM_noU)["A3"]
+      
+      
+      full_dat$wr = NULL
+    }
+    results.it[1,8]<- mean(Bootest.BMSM)
+    results.it[1,9]<- sd(Bootest.BMSM)
+    results.it[1,14]<- mean(Bootest.BMSM_uni)
+    results.it[1,15]<- sd(Bootest.BMSM_uni)
+    results.it[1,c(16,17)]<- quantile(Bootest.BMSM_uni, c(0.025, 0.975), na.rm = TRUE)
     ### Variance Calculation For MSM
     # bootstrap variance;
     Bootest_withU<-rep(NA, nboot)
@@ -295,9 +376,31 @@ mysim.bin.cens <- function(outfile, from=1, to=100, U=1, #parameters defining th
     Bootest_noU<-rep(NA, nboot)
 
     Bootest_SF<-rep(NA, nboot)
+    
+    # Bootest_BMSM <- rep(NA, nboot)
+    
     for (j1 in 1:nboot){
       bootidx <- sample(1:dim(full_dat)[1], replace=TRUE)
       bootdata <- full_dat[bootidx,]
+      
+      WMSM_withU_boot <- weightitMSM(
+        list(A1 ~ X1_1 + X2_1,
+             A2 ~ A1 + X1_1 + X2_1+ X1_2 + X2_2,
+             A3 ~ A2 + A1 + X1_1 + X2_1+ X1_2 + X2_2+ X1_3 + X2_3),
+        method = "glm",
+        data = bootdata,
+        stabilize = T)
+      bootdata$weights_withU <- WMSM_withU_boot$weights
+      
+      WMSM_noU_boot<- weightitMSM(
+        list(A1 ~ X2_1,
+             A2 ~ A1+X2_1+X2_2,
+             A3 ~ A2+A1+X2_1+X2_2+X2_3),
+        method = "glm",
+        data = bootdata,
+        stabilize = T)
+      
+      bootdata$weights_withoutU <- WMSM_noU_boot$weights
 
       MSM_withU <- lm(Y ~ (A1 + A2 + A3), weights = weights_withU, data = bootdata)
       Bootest_withU[j1] <- as.numeric(MSM_withU$coefficients[2]+ MSM_withU$coefficients[3] + MSM_withU$coefficients[4])
@@ -312,8 +415,7 @@ mysim.bin.cens <- function(outfile, from=1, to=100, U=1, #parameters defining th
     results.it[1,3]<- sd(Bootest_withU)
     results.it[1,5]<- sd(Bootest_noU)
     results.it[1,7]<- sd(Bootest_SF)
-
-    #    # combining parallel results;
+    
     cbind(i,results.it)
     #
   }
@@ -322,8 +424,7 @@ mysim.bin.cens <- function(outfile, from=1, to=100, U=1, #parameters defining th
 
 }
 
-mysim.bin.cens("500binaryU", from=1, to= 1000, U=1, #parameters defining the simulation iterations and outcome;
-               samplesize=500,#parameters for data simulation
+mysim.bin.cens("Sensitivity Function", from=1, to=1000, U=1, #parameters defining the simulation iterations and outcome;
+               samplesize=1000,#parameters for data simulation
                B=500, pdraw = 8000, nburnin = 6000,#parameters for analysis;
                Px11 = .5, Px12 = .4, coef_u = -0.2, coef_a = .1)#simulate measured covariates
-
